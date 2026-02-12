@@ -1,0 +1,162 @@
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timezone, timedelta
+
+import httpx
+
+log = logging.getLogger(__name__)
+
+GAMMA_API = "https://gamma-api.polymarket.com"
+
+# Filter thresholds — focus on high-activity, near-term markets
+MIN_LIQUIDITY = 2_000.0
+MIN_VOLUME_24H = 500.0
+PRICE_LOW = 0.05
+PRICE_HIGH = 0.95
+MIN_EXPIRY_HOURS = 1
+MAX_EXPIRY_DAYS = 14  # Only markets resolving within 2 weeks
+MAX_MARKETS_FETCH = 500  # Stop paginating after this many
+MAX_CANDIDATES = 30  # Send at most this many to Claude
+
+
+async def scan_markets() -> list[dict]:
+    """Fetch top markets from Gamma API sorted by volume, filter, return top candidates."""
+    raw = await _fetch_top_markets()
+    filtered = _filter_markets(raw)
+    # Sort by soonest expiry first (prioritize quick-resolve), then volume
+    filtered.sort(key=lambda m: (m.get("_days_to_expiry", 999), -m.get("_volume_24h", 0)))
+    filtered = filtered[:MAX_CANDIDATES]
+    log.info(f"Scanner: {len(raw)} fetched → {len(filtered)} candidates")
+    return filtered
+
+
+async def _fetch_top_markets() -> list[dict]:
+    """Fetch active markets sorted by volume (highest first), capped at MAX_MARKETS_FETCH."""
+    markets: list[dict] = []
+    limit = 100
+    offset = 0
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        while len(markets) < MAX_MARKETS_FETCH:
+            params = {
+                "active": "true",
+                "closed": "false",
+                "limit": str(limit),
+                "offset": str(offset),
+                "order": "volume24hr",
+                "ascending": "false",
+            }
+            try:
+                resp = await client.get(f"{GAMMA_API}/markets", params=params)
+                resp.raise_for_status()
+            except httpx.HTTPError as e:
+                log.error(f"Gamma API error at offset {offset}: {e}")
+                break
+
+            batch = resp.json()
+            if not batch:
+                break
+
+            markets.extend(batch)
+            if len(batch) < limit:
+                break
+            offset += limit
+
+    return markets[:MAX_MARKETS_FETCH]
+
+
+def _filter_markets(markets: list[dict]) -> list[dict]:
+    """Apply liquidity, volume, price, and expiry filters."""
+    now = datetime.now(timezone.utc)
+    result = []
+
+    for m in markets:
+        try:
+            liquidity = float(m.get("liquidity", 0) or 0)
+            volume_24h = float(m.get("volume24hr", 0) or 0)
+            end_date_str = m.get("endDate") or m.get("end_date_iso")
+            clob_token_ids = m.get("clobTokenIds")
+
+            if liquidity < MIN_LIQUIDITY:
+                continue
+            if volume_24h < MIN_VOLUME_24H:
+                continue
+
+            # Parse best prices from outcomes
+            outcomes_prices = _extract_prices(m)
+            if not outcomes_prices:
+                continue
+
+            best_price = outcomes_prices.get("yes") or outcomes_prices.get("Yes")
+            if best_price is None:
+                # Try first outcome price
+                best_price = next(iter(outcomes_prices.values()), None)
+            if best_price is None:
+                continue
+
+            if not (PRICE_LOW <= best_price <= PRICE_HIGH):
+                continue
+
+            # Check expiry
+            days_to_expiry = 999
+            if end_date_str:
+                try:
+                    end_date = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
+                    time_to_expiry = end_date - now
+                    if time_to_expiry < timedelta(hours=MIN_EXPIRY_HOURS):
+                        continue
+                    if time_to_expiry > timedelta(days=MAX_EXPIRY_DAYS):
+                        continue
+                    days_to_expiry = time_to_expiry.total_seconds() / 86400
+                except (ValueError, TypeError):
+                    pass  # If we can't parse date, still include it
+
+            # Attach parsed data for downstream use
+            m["_days_to_expiry"] = days_to_expiry
+            m["_prices"] = outcomes_prices
+            m["_liquidity"] = liquidity
+            m["_volume_24h"] = volume_24h
+            result.append(m)
+
+        except (ValueError, TypeError, KeyError) as e:
+            log.debug(f"Skipping market {m.get('id', '?')}: {e}")
+            continue
+
+    return result
+
+
+def _extract_prices(market: dict) -> dict[str, float]:
+    """Extract outcome prices from various Gamma API response formats."""
+    prices = {}
+
+    # Try outcomePrices (JSON string like "[\"0.55\",\"0.45\"]")
+    outcome_prices_raw = market.get("outcomePrices")
+    outcomes_raw = market.get("outcomes")
+
+    if outcome_prices_raw and outcomes_raw:
+        try:
+            import json
+            if isinstance(outcome_prices_raw, str):
+                price_list = json.loads(outcome_prices_raw)
+            else:
+                price_list = outcome_prices_raw
+
+            if isinstance(outcomes_raw, str):
+                outcome_list = json.loads(outcomes_raw)
+            else:
+                outcome_list = outcomes_raw
+
+            for name, price in zip(outcome_list, price_list):
+                prices[name] = float(price)
+            return prices
+        except (json.JSONDecodeError, ValueError, TypeError):
+            pass
+
+    # Try bestAsk/bestBid fields
+    if "bestAsk" in market:
+        prices["yes"] = float(market["bestAsk"])
+    if "bestBid" in market:
+        prices["no"] = 1.0 - float(market["bestBid"])
+
+    return prices
