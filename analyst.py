@@ -71,8 +71,79 @@ class Signal:
     token_id: str
 
 
+# Cache: market_id -> timestamp of last analysis (skip if analyzed within 30 min)
+_analysis_cache: dict[str, float] = {}
+CACHE_TTL = 1800  # 30 minutes
+
+
+async def pre_screen_markets(markets: list[dict], config: Config) -> list[dict]:
+    """Use Haiku to quickly filter markets worth deep-analyzing. ~20x cheaper than Opus."""
+    import time
+
+    # Skip recently analyzed markets
+    now = time.time()
+    candidates = []
+    for m in markets:
+        mid = m.get("id", "")
+        last = _analysis_cache.get(mid, 0)
+        if now - last < CACHE_TTL:
+            continue
+        candidates.append(m)
+
+    if not candidates:
+        log.info("Pre-screen: all markets recently analyzed, skipping")
+        return []
+
+    # Build batch prompt for Haiku
+    market_summaries = []
+    for i, m in enumerate(candidates[:30]):
+        prices = m.get("_prices", {})
+        yes_p = prices.get("Yes", prices.get("yes", 0.5))
+        q = m.get("question", "?")
+        market_summaries.append(f"{i+1}. {q} (YES={yes_p:.2f}, vol=${m.get('_volume_24h', 0):,.0f})")
+
+    batch_prompt = f"""You are a prediction market screener. Below are {len(market_summaries)} markets.
+For each, reply with ONLY the number and one of: INTERESTING or SKIP.
+
+Mark INTERESTING only if you think the market price might be meaningfully wrong (>5% edge)
+based on your knowledge. Be selective — mark at most 5 as INTERESTING.
+
+SKIP sports matches unless the odds look obviously wrong.
+SKIP markets where you have no basis to disagree with the price.
+
+Markets:
+""" + "\n".join(market_summaries)
+
+    try:
+        client = anthropic.Anthropic(api_key=config.anthropic_api_key)
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=512,
+            messages=[{"role": "user", "content": batch_prompt}],
+        )
+        text = response.content[0].text
+    except anthropic.APIError as e:
+        log.error(f"Haiku pre-screen error: {e}")
+        return candidates[:5]  # Fallback: just send first 5
+
+    # Parse which markets Haiku flagged
+    flagged = []
+    for i, m in enumerate(candidates[:30]):
+        marker = f"{i+1}."
+        # Check if this number was marked INTERESTING
+        for line in text.split("\n"):
+            if line.strip().startswith(marker) and "INTERESTING" in line.upper():
+                flagged.append(m)
+                break
+
+    log.info(f"Pre-screen: {len(candidates)} candidates → {len(flagged)} flagged by Haiku")
+    return flagged[:5]  # Cap at 5 for Opus
+
+
 async def analyze_market(market: dict, config: Config) -> Signal | None:
-    """Analyze a single market using Claude Opus 4.6. Returns Signal if edge is sufficient."""
+    """Deep-analyze a single market using Opus. Only called for pre-screened markets."""
+    import time
+
     question = market.get("question", "Unknown")
     market_id = market.get("id", "")
     description = market.get("description", "")
@@ -81,11 +152,9 @@ async def analyze_market(market: dict, config: Config) -> Signal | None:
     volume_24h = market.get("_volume_24h", 0)
     end_date = market.get("endDate") or market.get("end_date_iso", "Unknown")
 
-    # Get YES/NO prices
     yes_price = prices.get("Yes", prices.get("yes", 0.5))
     no_price = prices.get("No", prices.get("no", 0.5))
 
-    # Get CLOB token IDs for order placement
     clob_token_ids = market.get("clobTokenIds")
     if clob_token_ids:
         if isinstance(clob_token_ids, str):
@@ -93,10 +162,15 @@ async def analyze_market(market: dict, config: Config) -> Signal | None:
     else:
         clob_token_ids = []
 
+    # Mark as analyzed
+    _analysis_cache[market_id] = time.time()
+
     # Fetch news context
     news_context = await _search_news(question, config)
 
-    # Build prompt
+    # Get past trade results for learning
+    trade_history = _get_trade_history(config)
+
     prompt = _build_prompt(
         question=question,
         description=description,
@@ -106,9 +180,9 @@ async def analyze_market(market: dict, config: Config) -> Signal | None:
         volume_24h=volume_24h,
         end_date=end_date,
         news_context=news_context,
+        trade_history=trade_history,
     )
 
-    # Call Claude
     try:
         client = anthropic.Anthropic(api_key=config.anthropic_api_key)
         response = client.messages.create(
@@ -122,13 +196,11 @@ async def analyze_market(market: dict, config: Config) -> Signal | None:
         log.error(f"Claude API error for '{question}': {e}")
         return None
 
-    # Extract tool use result
     analysis = _extract_tool_result(response)
     if not analysis:
         log.warning(f"No structured analysis returned for '{question}'")
         return None
 
-    # Log analysis to DB
     conn = get_conn(config.db_path)
     insert_analysis(
         conn,
@@ -143,7 +215,6 @@ async def analyze_market(market: dict, config: Config) -> Signal | None:
         key_risks=analysis["key_risks"],
     )
 
-    # Check thresholds
     if analysis["recommendation"] == "SKIP":
         log.info(f"SKIP: {question} (edge={analysis['edge']:.3f}, conf={analysis['confidence']})")
         return None
@@ -156,7 +227,6 @@ async def analyze_market(market: dict, config: Config) -> Signal | None:
         log.info(f"Low confidence: {question} (conf={analysis['confidence']} < 5)")
         return None
 
-    # Determine side and token ID
     if analysis["recommendation"] == "BUY_YES":
         side = "YES"
         market_price = yes_price
@@ -196,7 +266,22 @@ def _build_prompt(
     volume_24h: float,
     end_date: str,
     news_context: str,
+    trade_history: str = "",
 ) -> str:
+    history_section = ""
+    if trade_history:
+        history_section = f"""
+## Your Past Trading Performance
+Review your past trades below. Learn from your wins and losses to calibrate better.
+{trade_history}
+
+**Key lessons to apply:**
+- If you've been losing on a certain category (e.g. sports), be MORE conservative and lower your confidence for similar markets.
+- If you've been winning on a category (e.g. geopolitics), your calibration is good — maintain your approach.
+- If your estimated probabilities have been off, adjust accordingly (e.g. if you overestimated YES outcomes, bias slightly toward NO).
+- Individual sports matches are very hard to predict without live form/injury data — default to SKIP unless you have strong evidence.
+"""
+
     return f"""You are an expert prediction market analyst. Analyze this Polymarket market and estimate the true probability.
 
 ## Market
@@ -210,7 +295,7 @@ def _build_prompt(
 
 ## Recent News Context
 {news_context if news_context else "No recent news found."}
-
+{history_section}
 ## Instructions
 1. Estimate the TRUE probability of the YES outcome based on all available evidence.
 2. Compare your estimate to the current market price.
@@ -221,6 +306,40 @@ def _build_prompt(
 Be aggressive in finding mispricings but honest about uncertainty. Consider base rates, recent developments, and potential for resolution surprises.
 
 Use the submit_analysis tool to provide your structured analysis."""
+
+
+def _get_trade_history(config: Config) -> str:
+    """Pull resolved trades from DB to feed into the prompt for learning."""
+    from db import get_conn
+
+    conn = get_conn(config.db_path)
+    resolved = conn.execute(
+        "SELECT question, side, price, size_usdc, edge, confidence, result, pnl, reasoning "
+        "FROM trades WHERE result IS NOT NULL ORDER BY ts DESC LIMIT 20"
+    ).fetchall()
+
+    if not resolved:
+        return ""
+
+    wins = [r for r in resolved if r[6] == "WIN"]
+    losses = [r for r in resolved if r[6] == "LOSS"]
+    total_pnl = sum(r[7] or 0 for r in resolved)
+
+    lines = [f"**Record: {len(wins)}W-{len(losses)}L | Net P&L: ${total_pnl:+.2f}**\n"]
+
+    for r in resolved:
+        question, side, price, size, edge, conf, result, pnl, reasoning = r
+        short_q = (question or "")[:60]
+        pnl_str = f"${pnl:+.2f}" if pnl is not None else "n/a"
+        lines.append(
+            f"- **{result}** ({pnl_str}): {side} on '{short_q}' @ {price:.3f} "
+            f"(edge={edge:.3f}, conf={conf:.0f})"
+        )
+        if reasoning and result == "LOSS":
+            short_reason = (reasoning or "")[:120]
+            lines.append(f"  Reasoning was: {short_reason}")
+
+    return "\n".join(lines)
 
 
 def _extract_tool_result(response) -> dict | None:

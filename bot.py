@@ -9,10 +9,10 @@ from datetime import datetime, timezone
 
 import httpx
 
-from analyst import analyze_market
+from analyst import analyze_market, pre_screen_markets
 from config import Config
 from db import get_conn
-from executor import calculate_bet, execute_trade, sell_position
+from executor import calculate_bet, execute_trade, redeem_positions, sell_position
 from portfolio import Portfolio
 from risk import RiskManager
 from scanner import scan_markets
@@ -62,14 +62,14 @@ async def run(config: Config) -> None:
             markets = await scan_markets()
             log.info(f"Found {len(markets)} candidate markets")
 
-            # 2. Analyze each candidate
-            trades_this_cycle = 0
-            for market in markets:
-                # Skip markets we already have positions in
-                existing_market_ids = {p.market_id for p in portfolio.positions.values()}
-                if market.get("id") in existing_market_ids:
-                    continue
+            # 2. Pre-screen with Haiku (cheap), then deep-analyze with Opus
+            existing_market_ids = {p.market_id for p in portfolio.positions.values()}
+            markets = [m for m in markets if m.get("id") not in existing_market_ids]
+            shortlist = await pre_screen_markets(markets, config)
+            log.info(f"Opus deep-analyzing {len(shortlist)} markets")
 
+            trades_this_cycle = 0
+            for market in shortlist:
                 signal = await analyze_market(market, config)
                 if not signal:
                     continue
@@ -160,6 +160,7 @@ async def check_resolutions(config: Config) -> None:
                     continue
 
             # Update all trades for this market
+            has_win = False
             for row in unresolved:
                 if row[0] != mid:
                     continue
@@ -176,6 +177,7 @@ async def check_resolutions(config: Config) -> None:
                     payout = trade_size / trade_price  # shares * $1
                     pnl = payout - trade_size
                     result_str = "WIN"
+                    has_win = True
                 else:
                     pnl = -trade_size
                     result_str = "LOSS"
@@ -187,6 +189,14 @@ async def check_resolutions(config: Config) -> None:
                 log.info(f"RESOLVED: {result_str} on '{row[1]}' — P&L: ${pnl:+.2f}")
 
             conn.commit()
+
+            # Redeem winning conditional tokens back to USDC.e
+            if has_win:
+                condition_id = market.get("conditionId", market.get("condition_id", ""))
+                neg_risk = market.get("negRisk", market.get("neg_risk", False))
+                if condition_id:
+                    log.info(f"Redeeming tokens for '{market.get('question', mid)[:50]}'...")
+                    await redeem_positions(condition_id, neg_risk, config)
 
 
 async def check_exits(portfolio: Portfolio, config: Config, risk: RiskManager) -> None:

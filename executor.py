@@ -5,11 +5,41 @@ from dataclasses import dataclass
 
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import OrderArgs, OrderType
+from web3 import Web3
 
 from analyst import Signal
 from config import Config
 
 log = logging.getLogger(__name__)
+
+# Polymarket contract addresses (Polygon)
+CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
+NEG_RISK_ADAPTER_ADDRESS = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"
+USDC_E_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+
+CTF_REDEEM_ABI = [{
+    "constant": False,
+    "inputs": [
+        {"name": "collateralToken", "type": "address"},
+        {"name": "parentCollectionId", "type": "bytes32"},
+        {"name": "conditionId", "type": "bytes32"},
+        {"name": "indexSets", "type": "uint256[]"},
+    ],
+    "name": "redeemPositions",
+    "outputs": [],
+    "type": "function",
+}]
+
+NEG_RISK_REDEEM_ABI = [{
+    "constant": False,
+    "inputs": [
+        {"name": "conditionId", "type": "bytes32"},
+        {"name": "amounts", "type": "uint256[]"},
+    ],
+    "name": "redeemPositions",
+    "outputs": [],
+    "type": "function",
+}]
 
 
 @dataclass
@@ -234,3 +264,68 @@ async def sell_position(
             size_usdc=price * size_shares,
             error=str(e),
         )
+
+
+async def redeem_positions(
+    condition_id: str,
+    neg_risk: bool,
+    config: Config,
+) -> bool:
+    """Redeem winning conditional tokens back to USDC.e after market resolution."""
+    if config.dry_run:
+        log.info(f"[DRY RUN] Would redeem condition {condition_id[:16]}...")
+        return True
+
+    try:
+        w3 = Web3(Web3.HTTPProvider("https://polygon-bor-rpc.publicnode.com"))
+        account = w3.eth.account.from_key(config.private_key)
+
+        condition_bytes = Web3.to_bytes(hexstr=condition_id)
+
+        if neg_risk:
+            contract = w3.eth.contract(
+                address=Web3.to_checksum_address(NEG_RISK_ADAPTER_ADDRESS),
+                abi=NEG_RISK_REDEEM_ABI,
+            )
+            # For neg-risk, pass large amounts — contract redeems up to balance
+            max_amount = 2**128
+            tx = contract.functions.redeemPositions(
+                condition_bytes,
+                [max_amount, max_amount],
+            ).build_transaction({
+                "from": account.address,
+                "nonce": w3.eth.get_transaction_count(account.address),
+                "gas": 300_000,
+                "gasPrice": w3.eth.gas_price,
+            })
+        else:
+            contract = w3.eth.contract(
+                address=Web3.to_checksum_address(CTF_ADDRESS),
+                abi=CTF_REDEEM_ABI,
+            )
+            tx = contract.functions.redeemPositions(
+                Web3.to_checksum_address(USDC_E_ADDRESS),
+                b"\x00" * 32,  # parentCollectionId = 0
+                condition_bytes,
+                [1, 2],  # YES=1, NO=2 — contract only pays winning side
+            ).build_transaction({
+                "from": account.address,
+                "nonce": w3.eth.get_transaction_count(account.address),
+                "gas": 300_000,
+                "gasPrice": w3.eth.gas_price,
+            })
+
+        signed = w3.eth.account.sign_transaction(tx, config.private_key)
+        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+
+        if receipt["status"] == 1:
+            log.info(f"REDEEMED condition {condition_id[:16]}... tx={tx_hash.hex()}")
+            return True
+        else:
+            log.warning(f"Redeem tx reverted for {condition_id[:16]}... tx={tx_hash.hex()}")
+            return False
+
+    except Exception as e:
+        log.error(f"Redeem failed for {condition_id[:16]}...: {e}")
+        return False
