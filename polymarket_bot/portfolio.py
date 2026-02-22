@@ -6,9 +6,9 @@ from dataclasses import dataclass, field
 
 import httpx
 
-from config import Config
-from db import get_conn, insert_snapshot, insert_trade
-from executor import OrderResult
+from .config import Config
+from .db import get_conn, insert_snapshot, insert_trade
+from .executor import OrderResult
 
 log = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ class Position:
 class Portfolio:
     def __init__(self, config: Config):
         self.config = config
-        self.positions: dict[str, Position] = {}  # keyed by token_id
+        self.positions: dict[str, Position] = {}
         self.realized_pnl: float = 0.0
         self._usdc_balance: float = 0.0
         self._peak_value: float = 0.0
@@ -58,7 +58,6 @@ class Portfolio:
         market_id = result.market_id
 
         if side == "SELL":
-            # Closing position
             if token_id in self.positions:
                 pos = self.positions[token_id]
                 sell_value = result.size_usdc
@@ -66,7 +65,6 @@ class Portfolio:
                 del self.positions[token_id]
                 log.info(f"Closed position: {question} (realized P&L: ${sell_value - pos.cost_basis:.2f})")
         else:
-            # Opening/adding to position
             size_shares = result.size_usdc / result.price if result.price > 0 else 0
 
             if token_id in self.positions:
@@ -88,7 +86,6 @@ class Portfolio:
                     current_price=result.price,
                 )
 
-        # Persist to DB
         conn = get_conn(self.config.db_path)
         insert_trade(
             conn,
@@ -133,16 +130,16 @@ class Portfolio:
             log.warning(f"Failed to sync prices: {e}")
 
     async def sync_balance(self) -> None:
-        """Fetch USDC balance from Polygon blockchain."""
+        """Fetch USDC.e balance from Polygon blockchain."""
         if self.config.dry_run:
             if self._usdc_balance == 0:
-                self._usdc_balance = 1000.0  # Simulated starting balance
+                self._usdc_balance = 1000.0
             return
 
         try:
             from web3 import Web3
-            w3 = Web3(Web3.HTTPProvider("https://polygon-rpc.com"))
-            usdc_address = Web3.to_checksum_address("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")  # USDC.e (bridged)
+            w3 = Web3(Web3.HTTPProvider(self.config.polygon_rpc_url))
+            usdc_address = Web3.to_checksum_address(USDC_E_ADDRESS)
             wallet = Web3.to_checksum_address(self.config.wallet_address)
             erc20_abi = [
                 {"constant": True, "inputs": [{"name": "_owner", "type": "address"}],
@@ -158,7 +155,6 @@ class Portfolio:
             log.info(f"USDC balance: ${self._usdc_balance:.2f}")
         except Exception as e:
             log.warning(f"Failed to fetch balance: {e}")
-            # Fallback: if we've never fetched, don't leave at zero
             if self._usdc_balance == 0:
                 log.warning("Using fallback balance of $0 — trades will be blocked")
 
@@ -178,13 +174,11 @@ class Portfolio:
         return self.realized_pnl + self.unrealized_pnl()
 
     def update_peak(self) -> None:
-        """Track peak portfolio value for drawdown calculation."""
         current = self.bankroll()
         if current > self._peak_value:
             self._peak_value = current
 
     def drawdown(self) -> float:
-        """Current drawdown from peak."""
         if self._peak_value == 0:
             return 0.0
         return 1.0 - (self.bankroll() / self._peak_value)
@@ -219,13 +213,17 @@ class Portfolio:
         exits = []
         for pos in self.positions.values():
             pnl_pct = pos.unrealized_pnl_pct
-            if pnl_pct <= -0.30:  # Stop-loss: -30%
+            if pnl_pct <= -0.30:
                 log.warning(f"STOP-LOSS triggered: {pos.question} ({pnl_pct:.1%})")
                 exits.append(pos)
-            elif pnl_pct >= 0.50:  # Take-profit: +50%
+            elif pnl_pct >= 0.50:
                 log.info(f"TAKE-PROFIT triggered: {pos.question} ({pnl_pct:.1%})")
                 exits.append(pos)
         return exits
+
+
+# Reuse USDC.e address from executor
+USDC_E_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
 
 
 def _parse_prices(market: dict) -> dict[str, float]:

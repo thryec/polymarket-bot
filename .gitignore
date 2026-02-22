@@ -1,5 +1,32 @@
+# Secrets
 .env
+
+# Data
 data/
+*.db
+*.db-wal
+*.db-shm
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
 .venv/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Logs
+*.log

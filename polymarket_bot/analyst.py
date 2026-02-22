@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
 
 import anthropic
 import httpx
 
-from config import Config
-from db import get_conn, insert_analysis
+from .config import Config
+from .db import get_conn, insert_analysis
 
 log = logging.getLogger(__name__)
 
@@ -78,9 +78,6 @@ CACHE_TTL = 1800  # 30 minutes
 
 async def pre_screen_markets(markets: list[dict], config: Config) -> list[dict]:
     """Use Haiku to quickly filter markets worth deep-analyzing. ~20x cheaper than Opus."""
-    import time
-
-    # Skip recently analyzed markets
     now = time.time()
     candidates = []
     for m in markets:
@@ -94,7 +91,6 @@ async def pre_screen_markets(markets: list[dict], config: Config) -> list[dict]:
         log.info("Pre-screen: all markets recently analyzed, skipping")
         return []
 
-    # Build batch prompt for Haiku
     market_summaries = []
     for i, m in enumerate(candidates[:30]):
         prices = m.get("_prices", {})
@@ -124,26 +120,22 @@ Markets:
         text = response.content[0].text
     except anthropic.APIError as e:
         log.error(f"Haiku pre-screen error: {e}")
-        return candidates[:5]  # Fallback: just send first 5
+        return candidates[:5]
 
-    # Parse which markets Haiku flagged
     flagged = []
     for i, m in enumerate(candidates[:30]):
         marker = f"{i+1}."
-        # Check if this number was marked INTERESTING
         for line in text.split("\n"):
             if line.strip().startswith(marker) and "INTERESTING" in line.upper():
                 flagged.append(m)
                 break
 
     log.info(f"Pre-screen: {len(candidates)} candidates → {len(flagged)} flagged by Haiku")
-    return flagged[:5]  # Cap at 5 for Opus
+    return flagged[:5]
 
 
 async def analyze_market(market: dict, config: Config) -> Signal | None:
     """Deep-analyze a single market using Opus. Only called for pre-screened markets."""
-    import time
-
     question = market.get("question", "Unknown")
     market_id = market.get("id", "")
     description = market.get("description", "")
@@ -162,13 +154,9 @@ async def analyze_market(market: dict, config: Config) -> Signal | None:
     else:
         clob_token_ids = []
 
-    # Mark as analyzed
     _analysis_cache[market_id] = time.time()
 
-    # Fetch news context
     news_context = await _search_news(question, config)
-
-    # Get past trade results for learning
     trade_history = _get_trade_history(config)
 
     prompt = _build_prompt(
@@ -310,8 +298,6 @@ Use the submit_analysis tool to provide your structured analysis."""
 
 def _get_trade_history(config: Config) -> str:
     """Pull resolved trades from DB to feed into the prompt for learning."""
-    from db import get_conn
-
     conn = get_conn(config.db_path)
     resolved = conn.execute(
         "SELECT question, side, price, size_usdc, edge, confidence, result, pnl, reasoning "
@@ -351,7 +337,7 @@ def _extract_tool_result(response) -> dict | None:
 
 
 async def _search_news(query: str, config: Config) -> str:
-    """Search for recent news using Brave Search API. Returns formatted headlines."""
+    """Search for recent news using Brave Search API."""
     if not config.brave_search_api_key:
         return ""
 

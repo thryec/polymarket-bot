@@ -1,4 +1,4 @@
-"""Live status dashboard — run `python status.py` to see current state."""
+"""Live status dashboard — run `python -m scripts.status` to see current state."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parent / "data" / "bot.db"
+DB_PATH = Path(__file__).resolve().parent.parent / "data" / "bot.db"
 
 
 def main():
@@ -17,7 +17,6 @@ def main():
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
 
-    # Latest snapshot
     snap = conn.execute("SELECT * FROM snapshots ORDER BY ts DESC LIMIT 1").fetchone()
 
     print("=" * 70)
@@ -35,7 +34,6 @@ def main():
     else:
         print("  No snapshots yet.")
 
-    # Win/Loss record
     wins = conn.execute("SELECT COUNT(*) as n, COALESCE(SUM(pnl),0) as total FROM trades WHERE result = 'WIN'").fetchone()
     losses = conn.execute("SELECT COUNT(*) as n, COALESCE(SUM(pnl),0) as total FROM trades WHERE result = 'LOSS'").fetchone()
     pending = conn.execute("SELECT COUNT(*) as n, COALESCE(SUM(size_usdc),0) as total FROM trades WHERE result IS NULL").fetchone()
@@ -61,7 +59,6 @@ def main():
     else:
         print(f"  Win rate:        n/a (no resolved trades yet)")
 
-    # Resolved trades detail
     resolved = conn.execute(
         "SELECT * FROM trades WHERE result IS NOT NULL ORDER BY ts DESC LIMIT 10"
     ).fetchall()
@@ -77,7 +74,6 @@ def main():
             question = (t['question'] or '')[:30]
             print(f"  {t['result']:<6} {pnl_str:>9} {t['side']:>4} ${t['size_usdc']:>7.2f} {t['price']:>6.3f}  {question}")
 
-    # Open trades
     open_trades = conn.execute(
         "SELECT * FROM trades WHERE result IS NULL ORDER BY ts DESC LIMIT 15"
     ).fetchall()
@@ -95,7 +91,6 @@ def main():
     else:
         print("  No open trades.")
 
-    # Analysis stats
     total = conn.execute("SELECT COUNT(*) as n FROM analyses").fetchone()['n']
     signals = conn.execute(
         "SELECT COUNT(*) as n FROM analyses WHERE recommendation != 'SKIP' AND edge >= 0.05 AND confidence >= 5"

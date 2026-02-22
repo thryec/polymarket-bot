@@ -3,19 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import sys
 from datetime import datetime, timezone
 
 import httpx
 
-from analyst import analyze_market, pre_screen_markets
-from config import Config
-from db import get_conn
-from executor import calculate_bet, execute_trade, redeem_positions, sell_position
-from portfolio import Portfolio
-from risk import RiskManager
-from scanner import scan_markets
+from .analyst import analyze_market, pre_screen_markets
+from .config import Config
+from .db import get_conn
+from .executor import calculate_bet, execute_trade, redeem_positions, sell_position
+from .portfolio import Portfolio
+from .risk import RiskManager
+from .scanner import scan_markets
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,7 +38,6 @@ async def run(config: Config) -> None:
     log.info(f"  Scan interval: {config.scan_interval}s")
     log.info("=" * 60)
 
-    # Initialize
     conn = get_conn(config.db_path)
     portfolio = Portfolio(config)
     risk = RiskManager(config=config)
@@ -48,7 +48,7 @@ async def run(config: Config) -> None:
         log.info(f"\n--- Cycle {cycle} @ {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')} ---")
 
         try:
-            # Sync portfolio state
+            # 1. Sync portfolio state
             await portfolio.sync_balance()
             await portfolio.sync_prices()
             risk.update_drawdown(portfolio)
@@ -58,27 +58,26 @@ async def run(config: Config) -> None:
                 await asyncio.sleep(config.scan_interval)
                 continue
 
-            # 1. Scan markets
+            # 2. Scan markets
             markets = await scan_markets()
             log.info(f"Found {len(markets)} candidate markets")
 
-            # 2. Pre-screen with Haiku (cheap), then deep-analyze with Opus
+            # 3. Pre-screen with Haiku, then deep-analyze with Opus
             existing_market_ids = {p.market_id for p in portfolio.positions.values()}
             markets = [m for m in markets if m.get("id") not in existing_market_ids]
             shortlist = await pre_screen_markets(markets, config)
             log.info(f"Opus deep-analyzing {len(shortlist)} markets")
 
+            # 4. Analyze and trade
             trades_this_cycle = 0
             for market in shortlist:
                 signal = await analyze_market(market, config)
                 if not signal:
                     continue
 
-                # 3. Risk check
                 if not risk.pre_trade_ok(signal, portfolio):
                     continue
 
-                # 4. Size and execute
                 bankroll = portfolio.bankroll()
                 exposure = portfolio.exposure()
                 bet = calculate_bet(signal, bankroll, exposure, config)
@@ -93,22 +92,21 @@ async def run(config: Config) -> None:
                         log.info("Max 3 trades per cycle — moving on")
                         break
 
-            # 5. Check resolved markets
+            # 5. Check resolved markets and redeem winnings
             await check_resolutions(config)
 
             # 6. Check exits
             await check_exits(portfolio, config, risk)
 
-            # 6. Log status
+            # 7. Log status
             log_status(portfolio, risk, cycle)
 
-            # 7. Save snapshot
+            # 8. Save snapshot
             portfolio.snapshot()
 
         except Exception as e:
             log.error(f"Cycle {cycle} error: {e}", exc_info=True)
 
-        # 8. Sleep
         await asyncio.sleep(config.scan_interval)
 
 
@@ -116,7 +114,6 @@ async def check_resolutions(config: Config) -> None:
     """Check if any traded markets have resolved and record win/loss."""
     conn = get_conn(config.db_path)
 
-    # Get unresolved trades
     unresolved = conn.execute(
         "SELECT DISTINCT market_id, question, side, price, size_usdc FROM trades WHERE result IS NULL"
     ).fetchall()
@@ -135,22 +132,16 @@ async def check_resolutions(config: Config) -> None:
             except Exception:
                 continue
 
-            # Check if market has resolved
             if not market.get("closed"):
                 continue
 
-            resolution = market.get("resolutionSource") or market.get("resolution")
-            winning_outcome = market.get("winningOutcome") or ""
-
-            # Determine YES/NO resolution from outcome prices
-            import json as _json
             outcome_prices = market.get("outcomePrices")
             outcomes = market.get("outcomes")
             resolved_yes = False
             if outcome_prices and outcomes:
                 try:
-                    prices = _json.loads(outcome_prices) if isinstance(outcome_prices, str) else outcome_prices
-                    names = _json.loads(outcomes) if isinstance(outcomes, str) else outcomes
+                    prices = json.loads(outcome_prices) if isinstance(outcome_prices, str) else outcome_prices
+                    names = json.loads(outcomes) if isinstance(outcomes, str) else outcomes
                     for name, price in zip(names, prices):
                         if name in ("Yes", "yes") and float(price) >= 0.99:
                             resolved_yes = True
@@ -159,12 +150,11 @@ async def check_resolutions(config: Config) -> None:
                 except (ValueError, TypeError):
                     continue
 
-            # Update all trades for this market
             has_win = False
             for row in unresolved:
                 if row[0] != mid:
                     continue
-                trade_side = row[2]  # YES or NO
+                trade_side = row[2]
                 trade_price = row[3]
                 trade_size = row[4]
 
@@ -174,7 +164,7 @@ async def check_resolutions(config: Config) -> None:
                     won = not resolved_yes
 
                 if won:
-                    payout = trade_size / trade_price  # shares * $1
+                    payout = trade_size / trade_price
                     pnl = payout - trade_size
                     result_str = "WIN"
                     has_win = True

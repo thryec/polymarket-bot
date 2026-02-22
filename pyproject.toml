@@ -1,8 +1,9 @@
 [project]
-name = "trading-bot"
-version = "0.1.0"
-description = "Polymarket AI trading bot using Claude Opus 4.6"
+name = "polymarket-bot"
+version = "0.2.0"
+description = "AI-powered trading bot for Polymarket prediction markets"
 requires-python = ">=3.11"
+license = "MIT"
 dependencies = [
     "py-clob-client>=0.34",
     "anthropic>=0.50",
@@ -10,3 +11,6 @@ dependencies = [
     "python-dotenv>=1.0",
     "web3>=7.0",
 ]
+
+[project.scripts]
+polymarket-bot = "polymarket_bot.bot:main"

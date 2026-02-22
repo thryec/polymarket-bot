@@ -1,7 +1,6 @@
 """Dry-run mode: Full pipeline without placing real orders.
 
-Run this to verify the bot's signal quality before going live.
-Usage: python dry_run.py
+Usage: python -m scripts.dry_run
 """
 
 from __future__ import annotations
@@ -11,11 +10,11 @@ import logging
 import os
 import sys
 
-# Force dry-run mode
+# Force dry-run mode before importing config
 os.environ["DRY_RUN"] = "true"
 
-from bot import run
-from config import Config
+from polymarket_bot.bot import run
+from polymarket_bot.config import Config
 
 logging.basicConfig(
     level=logging.INFO,

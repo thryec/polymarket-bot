@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(exist_ok=True)
 
@@ -34,11 +34,14 @@ class Config:
     clob_api_url: str = field(default_factory=lambda: _env("CLOB_API_URL", "https://clob.polymarket.com"))
     chain_id: int = field(default_factory=lambda: int(_env("CHAIN_ID", "137")))
 
+    # RPC
+    polygon_rpc_url: str = field(default_factory=lambda: _env("POLYGON_RPC_URL", "https://polygon-bor-rpc.publicnode.com"))
+
     # Tuning
-    scan_interval: int = field(default_factory=lambda: int(_env("SCAN_INTERVAL", "60")))
+    scan_interval: int = field(default_factory=lambda: int(_env("SCAN_INTERVAL", "300")))
     min_edge: float = field(default_factory=lambda: float(_env("MIN_EDGE", "0.05")))
     kelly_fraction: float = field(default_factory=lambda: float(_env("KELLY_FRACTION", "0.6")))
-    max_bet_usdc: float = field(default_factory=lambda: float(_env("MAX_BET_USDC", "500")))
+    max_bet_usdc: float = field(default_factory=lambda: float(_env("MAX_BET_USDC", "50")))
     max_drawdown_pct: float = field(default_factory=lambda: float(_env("MAX_DRAWDOWN_PCT", "0.35")))
 
     # Mode

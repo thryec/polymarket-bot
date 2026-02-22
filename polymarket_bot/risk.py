@@ -4,9 +4,9 @@ import logging
 import time
 from dataclasses import dataclass, field
 
-from analyst import Signal
-from config import Config
-from portfolio import Portfolio
+from .analyst import Signal
+from .config import Config
+from .portfolio import Portfolio
 
 log = logging.getLogger(__name__)
 
@@ -16,18 +16,16 @@ class RiskManager:
     config: Config
     _pause_until: float = 0.0
     _halted: bool = False
-    _bet_scale: float = 1.0  # Multiplier for bet sizes (halved during drawdown)
+    _bet_scale: float = 1.0
     _daily_loss: float = 0.0
     _daily_reset_ts: float = field(default_factory=time.time)
 
     def pre_trade_ok(self, signal: Signal, portfolio: Portfolio) -> bool:
         """Run all pre-trade risk checks. Returns True if trade is allowed."""
-        # Check halt
         if self._halted:
             log.warning("HALTED: All trading suspended due to max drawdown breach")
             return False
 
-        # Check pause
         if time.time() < self._pause_until:
             remaining = int(self._pause_until - time.time())
             log.warning(f"PAUSED: Trading paused for {remaining}s due to drawdown")
@@ -40,8 +38,7 @@ class RiskManager:
 
         exposure = portfolio.exposure()
 
-        # Single position limit: 20% of bankroll
-        proposed_bet = signal.market_price * bankroll * 0.15  # rough estimate
+        proposed_bet = signal.market_price * bankroll * 0.15
         for pos in portfolio.positions.values():
             if pos.market_id == signal.market_id:
                 existing_cost = pos.cost_basis
@@ -52,12 +49,10 @@ class RiskManager:
                     )
                     return False
 
-        # Total exposure limit: 85% of bankroll
         if exposure > bankroll * 0.85:
             log.warning(f"Exposure limit: ${exposure:.0f} > ${bankroll * 0.85:.0f}")
             return False
 
-        # Daily loss limit: 15%
         self._reset_daily_if_needed()
         if self._daily_loss > bankroll * 0.15:
             log.warning(f"Daily loss limit hit: ${self._daily_loss:.0f}")
@@ -81,7 +76,7 @@ class RiskManager:
         elif dd > 0.20:
             if self._pause_until < time.time():
                 log.warning(f"Drawdown {dd:.1%} > 20%: Pausing new trades for 30 minutes")
-                self._pause_until = time.time() + 1800  # 30 minutes
+                self._pause_until = time.time() + 1800
                 self._bet_scale = 0.25
         elif dd > 0.10:
             log.info(f"Drawdown {dd:.1%} > 10%: Halving bet sizes")

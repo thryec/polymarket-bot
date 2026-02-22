@@ -7,8 +7,8 @@ from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import OrderArgs, OrderType
 from web3 import Web3
 
-from analyst import Signal
-from config import Config
+from .analyst import Signal
+from .config import Config
 
 log = logging.getLogger(__name__)
 
@@ -63,8 +63,6 @@ def calculate_bet(
     p = signal.estimated_prob
     market_price = signal.market_price
 
-    # For BUY_YES: we pay market_price, win (1 - market_price) if correct
-    # For BUY_NO: we pay (1 - market_price), win market_price if correct
     if signal.side == "YES":
         cost = market_price
         win_prob = p
@@ -75,30 +73,25 @@ def calculate_bet(
     if cost <= 0 or cost >= 1:
         return 0.0
 
-    # Kelly fraction: f = (p*b - q) / b where b = (1-cost)/cost, q = 1-p
-    b = (1.0 - cost) / cost  # odds ratio
+    b = (1.0 - cost) / cost
     q = 1.0 - win_prob
     kelly_raw = (win_prob * b - q) / b
 
     if kelly_raw <= 0:
         return 0.0
 
-    # Scale by fractional Kelly and confidence
     confidence_scale = signal.confidence / 10.0
     f = config.kelly_fraction * kelly_raw * confidence_scale
 
     bet = f * bankroll
 
-    # Clamp
     bet = max(bet, 0.0)
     bet = min(bet, config.max_bet_usdc)
-    bet = min(bet, bankroll * 0.15)  # Max 15% of bankroll per trade
+    bet = min(bet, bankroll * 0.15)
 
-    # Minimum viable bet
     if bet < 5.0:
         return 0.0
 
-    # Check total exposure wouldn't exceed 85%
     if (exposure + bet) > bankroll * 0.85:
         bet = max(bankroll * 0.85 - exposure, 0.0)
         if bet < 5.0:
@@ -144,11 +137,8 @@ async def execute_trade(
             key=config.private_key,
             chain_id=config.chain_id,
         )
-
-        # Derive API credentials
         client.set_api_creds(client.create_or_derive_api_creds())
 
-        # Calculate size in shares: size_usdc / price
         size_shares = size_usdc / signal.market_price
 
         order_args = OrderArgs(
@@ -277,7 +267,7 @@ async def redeem_positions(
         return True
 
     try:
-        w3 = Web3(Web3.HTTPProvider("https://polygon-bor-rpc.publicnode.com"))
+        w3 = Web3(Web3.HTTPProvider(config.polygon_rpc_url))
         account = w3.eth.account.from_key(config.private_key)
 
         condition_bytes = Web3.to_bytes(hexstr=condition_id)
@@ -287,7 +277,6 @@ async def redeem_positions(
                 address=Web3.to_checksum_address(NEG_RISK_ADAPTER_ADDRESS),
                 abi=NEG_RISK_REDEEM_ABI,
             )
-            # For neg-risk, pass large amounts — contract redeems up to balance
             max_amount = 2**128
             tx = contract.functions.redeemPositions(
                 condition_bytes,
@@ -305,9 +294,9 @@ async def redeem_positions(
             )
             tx = contract.functions.redeemPositions(
                 Web3.to_checksum_address(USDC_E_ADDRESS),
-                b"\x00" * 32,  # parentCollectionId = 0
+                b"\x00" * 32,
                 condition_bytes,
-                [1, 2],  # YES=1, NO=2 — contract only pays winning side
+                [1, 2],
             ).build_transaction({
                 "from": account.address,
                 "nonce": w3.eth.get_transaction_count(account.address),
