@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 
@@ -53,6 +54,13 @@ class RiskManager:
             log.warning(f"Exposure limit: ${exposure:.0f} > ${bankroll * 0.85:.0f}")
             return False
 
+        similar = self._count_similar_positions(signal, portfolio)
+        if similar >= 2:
+            log.warning(
+                f"Correlation guard: {similar} similar positions for '{signal.question}'"
+            )
+            return False
+
         self._reset_daily_if_needed()
         if self._daily_loss > bankroll * 0.15:
             log.warning(f"Daily loss limit hit: ${self._daily_loss:.0f}")
@@ -101,6 +109,38 @@ class RiskManager:
         log.info("Halt reset — resuming trading")
         self._halted = False
         self._bet_scale = 1.0
+
+    @staticmethod
+    def _extract_keywords(text: str) -> set[str]:
+        """Extract meaningful keywords from question text."""
+        stop = {
+            "will", "the", "be", "in", "on", "at", "to", "of", "a", "an",
+            "by", "for", "or", "and", "is", "it", "this", "that", "with",
+            "from", "as", "are", "was", "were", "been", "being", "have",
+            "has", "had", "do", "does", "did", "but", "not", "no", "yes",
+            "before", "after", "above", "below", "between", "during",
+            "than", "more", "less", "what", "which", "who", "whom",
+        }
+        words = set(re.findall(r"[a-z]{3,}", text.lower()))
+        return words - stop
+
+    def _count_similar_positions(self, signal: Signal, portfolio: Portfolio) -> int:
+        """Count existing positions with significant keyword overlap."""
+        signal_kw = self._extract_keywords(signal.question)
+        if not signal_kw:
+            return 0
+        count = 0
+        for pos in portfolio.positions.values():
+            if pos.market_id == signal.market_id:
+                continue
+            pos_kw = self._extract_keywords(pos.question)
+            if not pos_kw:
+                continue
+            overlap = signal_kw & pos_kw
+            smaller = min(len(signal_kw), len(pos_kw))
+            if smaller > 0 and len(overlap) / smaller >= 0.4:
+                count += 1
+        return count
 
     def _reset_daily_if_needed(self) -> None:
         """Reset daily loss counter every 24 hours."""

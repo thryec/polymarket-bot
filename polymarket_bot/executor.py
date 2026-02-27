@@ -80,8 +80,9 @@ def calculate_bet(
     if kelly_raw <= 0:
         return 0.0
 
-    confidence_scale = signal.confidence / 10.0
-    f = config.kelly_fraction * kelly_raw * confidence_scale
+    confidence_scale = ((signal.confidence - 4) / 6.0) ** 1.5
+    edge_certainty = min(signal.edge / 0.20, 1.0)
+    f = config.kelly_fraction * kelly_raw * confidence_scale * edge_certainty
 
     bet = f * bankroll
 

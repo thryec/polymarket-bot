@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -25,7 +26,18 @@ async def scan_markets() -> list[dict]:
     """Fetch top markets from Gamma API sorted by volume, filter, return top candidates."""
     raw = await _fetch_top_markets()
     filtered = _filter_markets(raw)
-    filtered.sort(key=lambda m: (m.get("_days_to_expiry", 999), -m.get("_volume_24h", 0)))
+
+    # Composite score: 40% entropy, 40% volume, 20% expiry proximity
+    max_vol = max((m.get("_volume_24h", 0) for m in filtered), default=1) or 1
+    max_days = MAX_EXPIRY_DAYS
+    for m in filtered:
+        entropy_score = m.get("_entropy", 0)
+        volume_score = m.get("_volume_24h", 0) / max_vol
+        days = m.get("_days_to_expiry", max_days)
+        expiry_score = 1.0 - min(days / max_days, 1.0)
+        m["_composite_score"] = 0.4 * entropy_score + 0.4 * volume_score + 0.2 * expiry_score
+
+    filtered.sort(key=lambda m: m.get("_composite_score", 0), reverse=True)
     filtered = filtered[:MAX_CANDIDATES]
     log.info(f"Scanner: {len(raw)} fetched → {len(filtered)} candidates")
     return filtered
@@ -112,6 +124,7 @@ def _filter_markets(markets: list[dict]) -> list[dict]:
             m["_prices"] = outcomes_prices
             m["_liquidity"] = liquidity
             m["_volume_24h"] = volume_24h
+            m["_entropy"] = _shannon_entropy(outcomes_prices)
             result.append(m)
 
         except (ValueError, TypeError, KeyError) as e:
@@ -119,6 +132,23 @@ def _filter_markets(markets: list[dict]) -> list[dict]:
             continue
 
     return result
+
+
+def _shannon_entropy(prices: dict[str, float]) -> float:
+    """Compute Shannon entropy of outcome probabilities. Max=1.0 for binary market at 50/50."""
+    probs = [p for p in prices.values() if 0 < p < 1]
+    if not probs:
+        return 0.0
+    total = sum(probs)
+    if total == 0:
+        return 0.0
+    norm = [p / total for p in probs]
+    n = len(norm)
+    if n <= 1:
+        return 0.0
+    max_ent = math.log2(n)
+    ent = -sum(p * math.log2(p) for p in norm if p > 0)
+    return ent / max_ent if max_ent > 0 else 0.0
 
 
 def _extract_prices(market: dict) -> dict[str, float]:

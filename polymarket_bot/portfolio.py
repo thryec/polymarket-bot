@@ -98,6 +98,7 @@ class Portfolio:
             status="filled" if result.success else "failed",
             edge=signal.edge if signal else None,
             confidence=signal.confidence if signal else None,
+            estimated_prob=signal.estimated_prob if signal else None,
             reasoning=signal.reasoning if signal else None,
         )
 

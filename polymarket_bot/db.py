@@ -31,6 +31,7 @@ def _init_tables(conn: sqlite3.Connection) -> None:
             status TEXT NOT NULL DEFAULT 'placed',
             edge REAL,
             confidence REAL,
+            estimated_prob REAL,
             reasoning TEXT,
             result TEXT,
             pnl REAL
@@ -71,6 +72,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE trades ADD COLUMN result TEXT")
     if "pnl" not in existing:
         conn.execute("ALTER TABLE trades ADD COLUMN pnl REAL")
+    if "estimated_prob" not in existing:
+        conn.execute("ALTER TABLE trades ADD COLUMN estimated_prob REAL")
     conn.commit()
 
 
