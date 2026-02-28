@@ -261,8 +261,13 @@ async def redeem_positions(
     condition_id: str,
     neg_risk: bool,
     config: Config,
+    token_ids: list[str] | None = None,
 ) -> bool:
-    """Redeem winning conditional tokens back to USDC.e after market resolution."""
+    """Redeem winning conditional tokens back to USDC.e after market resolution.
+
+    For neg-risk markets, queries actual YES/NO token balances and passes them
+    as [yes_amount, no_amount] to the NegRiskAdapter.
+    """
     if config.dry_run:
         log.info(f"[DRY RUN] Would redeem condition {condition_id[:16]}...")
         return True
@@ -272,21 +277,27 @@ async def redeem_positions(
         account = w3.eth.account.from_key(config.private_key)
 
         condition_bytes = Web3.to_bytes(hexstr=condition_id)
+        gas_price = int(w3.eth.gas_price * 1.2)
 
         if neg_risk:
+            # Query actual token balances for the YES/NO positions
+            yes_bal, no_bal = _get_ctf_balances(w3, account.address, token_ids)
+            if yes_bal == 0 and no_bal == 0:
+                log.info(f"No tokens to redeem for {condition_id[:16]}...")
+                return True
+
             contract = w3.eth.contract(
                 address=Web3.to_checksum_address(NEG_RISK_ADAPTER_ADDRESS),
                 abi=NEG_RISK_REDEEM_ABI,
             )
-            max_amount = 2**128
             tx = contract.functions.redeemPositions(
                 condition_bytes,
-                [max_amount, max_amount],
+                [yes_bal, no_bal],
             ).build_transaction({
                 "from": account.address,
                 "nonce": w3.eth.get_transaction_count(account.address),
-                "gas": 300_000,
-                "gasPrice": w3.eth.gas_price,
+                "gas": 500_000,
+                "gasPrice": gas_price,
             })
         else:
             contract = w3.eth.contract(
@@ -301,13 +312,13 @@ async def redeem_positions(
             ).build_transaction({
                 "from": account.address,
                 "nonce": w3.eth.get_transaction_count(account.address),
-                "gas": 300_000,
-                "gasPrice": w3.eth.gas_price,
+                "gas": 500_000,
+                "gasPrice": gas_price,
             })
 
         signed = w3.eth.account.sign_transaction(tx, config.private_key)
         tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
 
         if receipt["status"] == 1:
             log.info(f"REDEEMED condition {condition_id[:16]}... tx={tx_hash.hex()}")
@@ -319,3 +330,35 @@ async def redeem_positions(
     except Exception as e:
         log.error(f"Redeem failed for {condition_id[:16]}...: {e}")
         return False
+
+
+CTF_BALANCE_ABI = [{
+    "constant": True,
+    "inputs": [
+        {"name": "account", "type": "address"},
+        {"name": "id", "type": "uint256"},
+    ],
+    "name": "balanceOf",
+    "outputs": [{"name": "", "type": "uint256"}],
+    "type": "function",
+}]
+
+
+def _get_ctf_balances(
+    w3: Web3, wallet: str, token_ids: list[str] | None
+) -> tuple[int, int]:
+    """Query YES and NO token balances from the CTF contract.
+
+    Returns raw amounts (6-decimal integers).
+    """
+    if not token_ids or len(token_ids) < 2:
+        return 0, 0
+
+    ctf = w3.eth.contract(
+        address=Web3.to_checksum_address(CTF_ADDRESS),
+        abi=CTF_BALANCE_ABI,
+    )
+    wallet_addr = Web3.to_checksum_address(wallet)
+    yes_bal = ctf.functions.balanceOf(wallet_addr, int(token_ids[0])).call()
+    no_bal = ctf.functions.balanceOf(wallet_addr, int(token_ids[1])).call()
+    return yes_bal, no_bal

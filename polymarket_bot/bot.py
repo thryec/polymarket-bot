@@ -185,8 +185,19 @@ async def check_resolutions(config: Config) -> None:
                 condition_id = market.get("conditionId", market.get("condition_id", ""))
                 neg_risk = market.get("negRisk", market.get("neg_risk", False))
                 if condition_id:
+                    # Extract YES/NO token IDs for neg-risk balance queries
+                    token_ids = None
+                    clob_ids = market.get("clobTokenIds")
+                    if clob_ids:
+                        if isinstance(clob_ids, str):
+                            try:
+                                token_ids = json.loads(clob_ids)
+                            except (json.JSONDecodeError, ValueError):
+                                pass
+                        else:
+                            token_ids = clob_ids
                     log.info(f"Redeeming tokens for '{market.get('question', mid)[:50]}'...")
-                    await redeem_positions(condition_id, neg_risk, config)
+                    await redeem_positions(condition_id, neg_risk, config, token_ids=token_ids)
 
 
 async def check_exits(portfolio: Portfolio, config: Config, risk: RiskManager) -> None:
