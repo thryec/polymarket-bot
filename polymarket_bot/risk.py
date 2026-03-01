@@ -11,6 +11,24 @@ from .portfolio import Portfolio
 
 log = logging.getLogger(__name__)
 
+CATEGORY_PATTERNS: dict[str, set[str]] = {
+    "crypto": {"bitcoin", "btc", "ethereum", "eth", "crypto", "solana", "sol",
+               "token", "blockchain", "defi", "nft", "altcoin", "memecoin",
+               "dogecoin", "doge", "xrp", "cardano"},
+    "us_politics": {"trump", "biden", "president", "congress", "senate",
+                    "republican", "democrat", "election", "gop", "dnc",
+                    "governor", "poll", "electoral", "impeach", "scotus"},
+    "geopolitics": {"ukraine", "russia", "china", "taiwan", "nato", "war",
+                    "sanctions", "ceasefire", "missile", "invasion", "iran",
+                    "israel", "gaza", "palestine", "nuclear"},
+    "sports": {"nba", "nfl", "mlb", "nhl", "ufc", "premier", "league",
+               "championship", "playoff", "finals", "game", "match",
+               "super", "bowl", "world", "cup", "score", "winner"},
+    "economics": {"fed", "rate", "inflation", "gdp", "recession", "tariff",
+                  "interest", "unemployment", "cpi", "jobs", "treasury",
+                  "stock", "market", "dow", "nasdaq"},
+}
+
 
 @dataclass
 class RiskManager:
@@ -61,6 +79,20 @@ class RiskManager:
             )
             return False
 
+        category = self._categorize_market(signal.question)
+        if category != "other":
+            cat_count = sum(
+                1 for pos in portfolio.positions.values()
+                if pos.market_id != signal.market_id
+                and self._categorize_market(pos.question) == category
+            )
+            if cat_count >= 3:
+                log.warning(
+                    f"Category limit: {cat_count} positions in '{category}' "
+                    f"for '{signal.question}'"
+                )
+                return False
+
         self._reset_daily_if_needed()
         if self._daily_loss > bankroll * 0.15:
             log.warning(f"Daily loss limit hit: ${self._daily_loss:.0f}")
@@ -109,6 +141,19 @@ class RiskManager:
         log.info("Halt reset — resuming trading")
         self._halted = False
         self._bet_scale = 1.0
+
+    @staticmethod
+    def _categorize_market(question: str) -> str:
+        """Classify a market question into a category based on keyword matching."""
+        words = set(re.findall(r"[a-z]{2,}", question.lower()))
+        best_cat = "other"
+        best_count = 0
+        for cat, keywords in CATEGORY_PATTERNS.items():
+            overlap = len(words & keywords)
+            if overlap > best_count:
+                best_count = overlap
+                best_cat = cat
+        return best_cat
 
     @staticmethod
     def _extract_keywords(text: str) -> set[str]:

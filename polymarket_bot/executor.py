@@ -82,7 +82,21 @@ def calculate_bet(
 
     confidence_scale = ((signal.confidence - 4) / 6.0) ** 1.5
     edge_certainty = min(signal.edge / 0.20, 1.0)
-    f = config.kelly_fraction * kelly_raw * confidence_scale * edge_certainty
+
+    # Extreme price dampening: LLM estimates least reliable at extremes
+    price_reliability = max(1.0 - (2.0 * abs(market_price - 0.5)) ** 2, 0.05)
+
+    # Liquidity-aware sizing: thin markets get smaller bets
+    liq_score = min(signal.liquidity / 10_000, 2.0)
+    vol_score = min(signal.volume_24h / 5_000, 2.0)
+    liquidity_mult = 0.3 + 0.7 * min((liq_score + vol_score) / 2, 1.5)
+
+    # Time decay: reduce size near expiry
+    days = getattr(signal, 'days_to_expiry', 14.0)
+    time_mult = (0.1 + 0.9 * min(days / 2.0, 1.0)) if days < 2.0 else 1.0
+
+    f = (config.kelly_fraction * kelly_raw * confidence_scale * edge_certainty
+         * price_reliability * liquidity_mult * time_mult)
 
     bet = f * bankroll
 

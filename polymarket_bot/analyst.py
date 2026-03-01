@@ -69,6 +69,9 @@ class Signal:
     reasoning: str
     key_risks: str
     token_id: str
+    liquidity: float = 0.0
+    volume_24h: float = 0.0
+    days_to_expiry: float = 14.0
 
 
 # Cache: market_id -> timestamp of last analysis (skip if analyzed within 30 min)
@@ -224,6 +227,8 @@ async def analyze_market(market: dict, config: Config) -> Signal | None:
         market_price = no_price
         token_id = clob_token_ids[1] if len(clob_token_ids) > 1 else ""
 
+    _days_to_expiry = market.get("_days_to_expiry", 14.0)
+
     signal = Signal(
         market_id=market_id,
         question=question,
@@ -235,6 +240,9 @@ async def analyze_market(market: dict, config: Config) -> Signal | None:
         reasoning=analysis["reasoning"],
         key_risks=analysis["key_risks"],
         token_id=token_id,
+        liquidity=liquidity,
+        volume_24h=volume_24h,
+        days_to_expiry=_days_to_expiry,
     )
 
     log.info(

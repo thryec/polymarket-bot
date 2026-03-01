@@ -104,6 +104,21 @@ def main():
     if total > 0:
         print(f"  Signal rate:     {signals / total * 100:.1f}%")
 
+    # Calibration stats
+    from polymarket_bot.db import get_calibration_stats
+    cal = get_calibration_stats(conn)
+    if cal["n"] > 0:
+        print(f"\n{'─' * 70}")
+        print(f"  CALIBRATION (Brier Score)")
+        print(f"{'─' * 70}")
+        print(f"  Brier score:     {cal['brier']:.4f}  (lower is better, 0.25 = random)")
+        print(f"  Resolved trades: {cal['n']}")
+        if cal["buckets"]:
+            print(f"\n  {'Bucket':<10} {'Avg Est':>8} {'Actual':>8} {'Count':>6}")
+            print(f"  {'─'*10} {'─'*8} {'─'*8} {'─'*6}")
+            for b in cal["buckets"]:
+                print(f"  {b['range']:<10} {b['avg_prob']:>7.1%} {b['actual_win_rate']:>7.1%} {b['n']:>6}")
+
     print(f"\n{'=' * 70}")
 
 

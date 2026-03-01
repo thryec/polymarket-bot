@@ -123,3 +123,47 @@ def get_analyses(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
         "SELECT * FROM analyses ORDER BY ts DESC LIMIT ?", (limit,)
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_calibration_stats(conn: sqlite3.Connection) -> dict:
+    """Compute Brier score and per-bucket calibration from resolved trades."""
+    rows = conn.execute(
+        "SELECT estimated_prob, result FROM trades "
+        "WHERE result IS NOT NULL AND estimated_prob IS NOT NULL"
+    ).fetchall()
+
+    if not rows:
+        return {"brier": None, "n": 0, "buckets": []}
+
+    total_sq_error = 0.0
+    # Buckets: [0-0.2), [0.2-0.4), [0.4-0.6), [0.6-0.8), [0.8-1.0]
+    bucket_bounds = [(0.0, 0.2), (0.2, 0.4), (0.4, 0.6), (0.6, 0.8), (0.8, 1.01)]
+    bucket_data = [{"sum_prob": 0.0, "sum_outcome": 0.0, "n": 0} for _ in bucket_bounds]
+
+    for row in rows:
+        prob = row[0]
+        outcome = 1.0 if row[1] == "WIN" else 0.0
+        total_sq_error += (prob - outcome) ** 2
+
+        for i, (lo, hi) in enumerate(bucket_bounds):
+            if lo <= prob < hi:
+                bucket_data[i]["sum_prob"] += prob
+                bucket_data[i]["sum_outcome"] += outcome
+                bucket_data[i]["n"] += 1
+                break
+
+    n = len(rows)
+    brier = total_sq_error / n
+
+    buckets = []
+    for i, (lo, hi) in enumerate(bucket_bounds):
+        bd = bucket_data[i]
+        if bd["n"] > 0:
+            buckets.append({
+                "range": f"{lo:.0%}-{min(hi, 1.0):.0%}",
+                "avg_prob": bd["sum_prob"] / bd["n"],
+                "actual_win_rate": bd["sum_outcome"] / bd["n"],
+                "n": bd["n"],
+            })
+
+    return {"brier": brier, "n": n, "buckets": buckets}
