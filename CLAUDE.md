@@ -24,7 +24,7 @@ ssh trading-bot 'curl -s "https://data-api.polymarket.com/positions?user=$WALLET
 ```
 
 ## VPS Details
-- **SSH alias**: `ssh trading-bot` (root@VPS_IP, Digital Ocean)
+- **SSH alias**: `ssh trading-bot` (Digital Ocean)
 - **Repo path**: `/root/polymarket-bot/`
 - **Venv**: `/root/venv/`
 - **Systemd service**: `trading-bot.service` (WorkingDirectory=/root/polymarket-bot)
@@ -75,10 +75,4 @@ Polymarket neg-risk markets require special handling for on-chain token redempti
 - **Gamma API**: `https://gamma-api.polymarket.com` — market data, prices, metadata
 - **Data API**: `https://data-api.polymarket.com` — wallet positions, PnL
 - USDC.e on Polygon: `0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174` (6 decimals)
-- Wallet: `$WALLET_ADDRESS` (EOA, not proxy)
-
-## Wallet / Performance (as of Feb 28 2026)
-- Original deposit: [REDACTED]
-- Portfolio value: [REDACTED]
-- Big winner: [REDACTED]
-- Bot has not yet placed autonomous trades
+- Wallet address is in `.env` (EOA, not proxy)
