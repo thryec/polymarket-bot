@@ -37,3 +37,44 @@ for time remaining.
 - 2+ days → 1.0x (normal)
 - 1 day → 0.55x
 - 6 hours → 0.33x
+
+---
+
+## Phase 2: Accuracy Improvements (from article's deeper analysis)
+
+### 6. Weak Analysis Prompt
+**Problem:** Prompt said "be aggressive in finding mispricings" — biased toward action.
+No structured framework for base rate thinking. LLM anchors on market price.
+**Fix:** Restructured prompt with 5-step analysis framework:
+1. Base rate — historical frequency before looking at specifics
+2. Case FOR current price — strongest arguments the market is right
+3. Case AGAINST — specific evidence the price is wrong
+4. Consensus check — compare against external forecasters mentioned in news
+5. Estimate — only trade if Step 3 outweighs Step 2
+
+### 7. Haiku Screener Too Loose
+**Problem:** Screener only saw question + price. No description, no category performance data.
+**Fix:** Added market description + liquidity to screener summaries. Feed category win rates
+from past trades so Haiku avoids categories where the bot has historically lost.
+
+### 8. Shallow News Context
+**Problem:** Single Brave search with just the market question. Misses forecast/odds context.
+**Fix:** Run 2 searches — one with the raw question, one appending "probability forecast odds"
+to find forecaster opinions. Deduplicate results, return up to 8 snippets.
+
+### 9. No Category Specialization
+**Problem:** Same 5% min_edge for all categories, even ones where bot has <40% win rate.
+**Fix:** `get_category_win_rates()` in `db.py` tracks per-category performance. If a category
+has <40% win rate over 3+ resolved trades, min_edge is raised to 10%.
+
+### 10. No Market Age Filter
+**Problem:** Brand new markets have poor price discovery. Early prices are unreliable.
+**Fix:** Added `MIN_MARKET_AGE_HOURS = 24` filter in scanner. Markets created <24h ago
+are skipped — wait for initial price discovery to settle.
+
+### 11. No Consensus Cross-Check
+**Problem:** Bot forms opinions in isolation. If its estimate diverges from the market AND
+external forecasters, it's probably wrong.
+**Fix:** Added Step 4 (consensus check) in the analysis prompt. Claude now explicitly looks
+for external probability estimates in the news context and lowers confidence when its
+estimate diverges from multiple sources.
