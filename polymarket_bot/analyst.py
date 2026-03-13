@@ -22,7 +22,7 @@ ANALYSIS_TOOL = {
         "properties": {
             "estimated_probability": {
                 "type": "number",
-                "description": "Your estimated true probability of YES outcome (0.0 to 1.0)",
+                "description": "Your estimated true probability of YES outcome (0.0 to 1.0). Round to nearest 0.05 — e.g. 0.55, 0.60, 0.75. False precision is worse than honest uncertainty.",
             },
             "confidence": {
                 "type": "number",
@@ -208,13 +208,21 @@ async def analyze_market(market: dict, config: Config) -> Signal | None:
         log.warning(f"No structured analysis returned for '{question}'")
         return None
 
+    # Snap probability to nearest 0.05 — LLM can't meaningfully distinguish
+    # 0.73 from 0.71, and false precision hurts Kelly sizing
+    raw_prob = analysis["estimated_probability"]
+    snapped_prob = round(raw_prob * 20) / 20  # nearest 0.05
+    snapped_prob = max(0.05, min(0.95, snapped_prob))
+    analysis["estimated_probability"] = snapped_prob
+    analysis["edge"] = abs(snapped_prob - yes_price)
+
     conn = get_conn(config.db_path)
     insert_analysis(
         conn,
         market_id=market_id,
         question=question,
         market_price=yes_price,
-        estimated_prob=analysis["estimated_probability"],
+        estimated_prob=snapped_prob,
         confidence=analysis["confidence"],
         edge=analysis["edge"],
         recommendation=analysis["recommendation"],
