@@ -167,3 +167,39 @@ def get_calibration_stats(conn: sqlite3.Connection) -> dict:
             })
 
     return {"brier": brier, "n": n, "buckets": buckets}
+
+
+def get_category_win_rates(conn: sqlite3.Connection) -> dict[str, dict]:
+    """Compute win rates per market category from resolved trades."""
+    import re
+    from .risk import CATEGORY_PATTERNS
+
+    rows = conn.execute(
+        "SELECT question, result FROM trades WHERE result IS NOT NULL"
+    ).fetchall()
+    if not rows:
+        return {}
+
+    stats: dict[str, dict] = {}
+    for row in rows:
+        question = row[0] or ""
+        result = row[1]
+        words = set(re.findall(r"[a-z]{2,}", question.lower()))
+        best_cat, best_n = "other", 0
+        for cat, kw in CATEGORY_PATTERNS.items():
+            n = len(words & kw)
+            if n > best_n:
+                best_cat, best_n = cat, n
+        if best_cat not in stats:
+            stats[best_cat] = {"wins": 0, "losses": 0}
+        if result == "WIN":
+            stats[best_cat]["wins"] += 1
+        else:
+            stats[best_cat]["losses"] += 1
+
+    result_dict = {}
+    for cat, s in stats.items():
+        total = s["wins"] + s["losses"]
+        if total >= 3:
+            result_dict[cat] = {"win_rate": s["wins"] / total, "n": total}
+    return result_dict
