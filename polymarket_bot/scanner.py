@@ -18,6 +18,7 @@ PRICE_LOW = 0.05
 PRICE_HIGH = 0.95
 MIN_EXPIRY_HOURS = 1
 MAX_EXPIRY_DAYS = 14
+MIN_MARKET_AGE_HOURS = 24
 MAX_MARKETS_FETCH = 500
 MAX_CANDIDATES = 30
 
@@ -117,6 +118,17 @@ def _filter_markets(markets: list[dict]) -> list[dict]:
                     if time_to_expiry > timedelta(days=MAX_EXPIRY_DAYS):
                         continue
                     days_to_expiry = time_to_expiry.total_seconds() / 86400
+                except (ValueError, TypeError):
+                    pass
+
+            # Market age filter: skip markets created less than 24h ago
+            created_str = m.get("startDate") or m.get("createdAt")
+            if created_str:
+                try:
+                    created = datetime.fromisoformat(created_str.replace("Z", "+00:00"))
+                    age_hours = (now - created).total_seconds() / 3600
+                    if age_hours < MIN_MARKET_AGE_HOURS:
+                        continue
                 except (ValueError, TypeError):
                     pass
 
